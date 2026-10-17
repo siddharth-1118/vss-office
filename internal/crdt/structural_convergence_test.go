@@ -1,5 +1,3 @@
-//go:build convergence
-
 package crdt
 
 import (
@@ -127,7 +125,7 @@ func TestStructuralConvergence(t *testing.T) {
 	// Assert cell-by-cell convergence across replicas
 	diverged := false
 	for r := 0; r < 5; r++ {
-		if orderA[r] != orderB[r] {
+		if orderA[r] != orderB[r] || orderA[r] == "<blank>" {
 			diverged = true
 			break
 		}

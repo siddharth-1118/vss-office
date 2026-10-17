@@ -27,21 +27,27 @@ type Op struct {
 type GridSetCellPayload struct {
 	Row     int            `json:"row"`
 	Col     int            `json:"col"`
+	RowPos  Pos            `json:"row_pos,omitempty"`
+	ColPos  Pos            `json:"col_pos,omitempty"`
 	Raw     string         `json:"raw,omitempty"`
 	Formula *string        `json:"formula,omitempty"`
 	Style   map[string]any `json:"style,omitempty"`
 }
 
 type GridInsertAxisPayload struct {
-	Axis  string `json:"axis"` // "row" or "col"
-	Index int    `json:"index"`
-	Count int    `json:"count"`
+	Axis           string `json:"axis"` // "row" or "col"
+	Index          int    `json:"index"`
+	Count          int    `json:"count"`
+	Pos            Pos    `json:"pos,omitempty"`
+	AfterPosition  Pos    `json:"after_pos,omitempty"`
+	BeforePosition Pos    `json:"before_pos,omitempty"`
 }
 
 type GridDeleteAxisPayload struct {
 	Axis  string `json:"axis"` // "row" or "col"
 	Index int    `json:"index"`
 	Count int    `json:"count"`
+	Pos   Pos    `json:"pos,omitempty"`
 }
 
 // NewOp creates an Op, accepting any typed struct payload and marshaling it to JSON internally.

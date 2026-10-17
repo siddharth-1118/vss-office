@@ -249,3 +249,208 @@ func TestGrid_FormulaClearing(t *testing.T) {
 		t.Errorf("expected raw number 99, got %v", cv2)
 	}
 }
+
+func TestConcurrentRowInsertBothOrders(t *testing.T) {
+	initial := []string{"r0", "r1", "r2"}
+	gA := NewGrid("doc-row-both")
+	gB := NewGrid("doc-row-both")
+
+	for r, val := range initial {
+		op, _ := NewOp("doc-row-both", "init", OpGridSetCell, GridSetCellPayload{Row: r, Col: 0, Raw: val})
+		_, _ = gA.Apply(op)
+		_, _ = gB.Apply(op)
+	}
+
+	opInsA, _ := NewOp("doc-row-both", "actor-A", OpGridInsertAxis, GridInsertAxisPayload{Axis: "row", Index: 1, Count: 1})
+	opSetA, _ := NewOp("doc-row-both", "actor-A", OpGridSetCell, GridSetCellPayload{Row: 1, Col: 0, Raw: "A_row"})
+
+	opInsB, _ := NewOp("doc-row-both", "actor-B", OpGridInsertAxis, GridInsertAxisPayload{Axis: "row", Index: 1, Count: 1})
+	opSetB, _ := NewOp("doc-row-both", "actor-B", OpGridSetCell, GridSetCellPayload{Row: 1, Col: 0, Raw: "B_row"})
+
+	// gA applies local A, then remote B
+	_, _ = gA.Apply(opInsA)
+	_, _ = gA.Apply(opSetA)
+	_, _ = gA.Apply(opInsB)
+	_, _ = gA.Apply(opSetB)
+
+	// gB applies local B, then remote A
+	_, _ = gB.Apply(opInsB)
+	_, _ = gB.Apply(opSetB)
+	_, _ = gB.Apply(opInsA)
+	_, _ = gB.Apply(opSetA)
+
+	// Assert convergence across all 5 rows
+	for r := 0; r < 5; r++ {
+		cvA, okA := gA.GetCell(sheet.CellAddr{Row: r, Col: 0})
+		cvB, okB := gB.GetCell(sheet.CellAddr{Row: r, Col: 0})
+		if !okA || !okB {
+			t.Fatalf("row %d missing cell: okA=%v, okB=%v", r, okA, okB)
+		}
+		if cvA.Display != cvB.Display {
+			t.Fatalf("row %d value mismatch: gA=%q, gB=%q", r, cvA.Display, cvB.Display)
+		}
+	}
+}
+
+func TestConcurrentColInsertBothOrders(t *testing.T) {
+	initial := []string{"c0", "c1", "c2"}
+	gA := NewGrid("doc-col-both")
+	gB := NewGrid("doc-col-both")
+
+	for c, val := range initial {
+		op, _ := NewOp("doc-col-both", "init", OpGridSetCell, GridSetCellPayload{Row: 0, Col: c, Raw: val})
+		_, _ = gA.Apply(op)
+		_, _ = gB.Apply(op)
+	}
+
+	opInsA, _ := NewOp("doc-col-both", "actor-A", OpGridInsertAxis, GridInsertAxisPayload{Axis: "col", Index: 1, Count: 1})
+	opSetA, _ := NewOp("doc-col-both", "actor-A", OpGridSetCell, GridSetCellPayload{Row: 0, Col: 1, Raw: "A_col"})
+
+	opInsB, _ := NewOp("doc-col-both", "actor-B", OpGridInsertAxis, GridInsertAxisPayload{Axis: "col", Index: 1, Count: 1})
+	opSetB, _ := NewOp("doc-col-both", "actor-B", OpGridSetCell, GridSetCellPayload{Row: 0, Col: 1, Raw: "B_col"})
+
+	// gA applies local A, then remote B
+	_, _ = gA.Apply(opInsA)
+	_, _ = gA.Apply(opSetA)
+	_, _ = gA.Apply(opInsB)
+	_, _ = gA.Apply(opSetB)
+
+	// gB applies local B, then remote A
+	_, _ = gB.Apply(opInsB)
+	_, _ = gB.Apply(opSetB)
+	_, _ = gB.Apply(opInsA)
+	_, _ = gB.Apply(opSetA)
+
+	// Assert convergence across all 5 columns
+	for c := 0; c < 5; c++ {
+		cvA, okA := gA.GetCell(sheet.CellAddr{Row: 0, Col: c})
+		cvB, okB := gB.GetCell(sheet.CellAddr{Row: 0, Col: c})
+		if !okA || !okB {
+			t.Fatalf("col %d missing cell: okA=%v, okB=%v", c, okA, okB)
+		}
+		if cvA.Display != cvB.Display {
+			t.Fatalf("col %d value mismatch: gA=%q, gB=%q", c, cvA.Display, cvB.Display)
+		}
+	}
+}
+
+func TestConcurrentInsertAndDelete(t *testing.T) {
+	initial := []string{"r0", "r1", "r2", "r3"}
+	gA := NewGrid("doc-ins-del")
+	gB := NewGrid("doc-ins-del")
+
+	for r, val := range initial {
+		op, _ := NewOp("doc-ins-del", "init", OpGridSetCell, GridSetCellPayload{Row: r, Col: 0, Raw: val})
+		_, _ = gA.Apply(op)
+		_, _ = gB.Apply(op)
+	}
+
+	// A inserts row at index 2
+	opInsA, _ := NewOp("doc-ins-del", "actor-A", OpGridInsertAxis, GridInsertAxisPayload{Axis: "row", Index: 2, Count: 1})
+	// B deletes row at index 0
+	opDelB, _ := NewOp("doc-ins-del", "actor-B", OpGridDeleteAxis, GridDeleteAxisPayload{Axis: "row", Index: 0, Count: 1})
+
+	// gA applies insert A then delete B
+	_, _ = gA.Apply(opInsA)
+	_, _ = gA.Apply(opDelB)
+
+	// gB applies delete B then insert A
+	_, _ = gB.Apply(opDelB)
+	_, _ = gB.Apply(opInsA)
+
+	// Assert row counts and cells converge
+	allA := gA.AllCells()
+	allB := gB.AllCells()
+	if len(allA) != len(allB) {
+		t.Fatalf("cell count mismatch: gA=%d, gB=%d", len(allA), len(allB))
+	}
+	for addr, cvA := range allA {
+		cvB, ok := allB[addr]
+		if !ok || cvA.Display != cvB.Display {
+			t.Fatalf("mismatch at %v: gA=%v, gB=%v", addr, cvA, cvB)
+		}
+	}
+}
+
+func TestConcurrentInsertAndSetCell(t *testing.T) {
+	gA := NewGrid("doc-ins-set")
+	gB := NewGrid("doc-ins-set")
+
+	op0, _ := NewOp("doc-ins-set", "init", OpGridSetCell, GridSetCellPayload{Row: 0, Col: 0, Raw: "v0"})
+	op1, _ := NewOp("doc-ins-set", "init", OpGridSetCell, GridSetCellPayload{Row: 1, Col: 0, Raw: "v1"})
+	_, _ = gA.Apply(op0)
+	_, _ = gA.Apply(op1)
+	_, _ = gB.Apply(op0)
+	_, _ = gB.Apply(op1)
+
+	// A inserts a row at index 1
+	opInsA, _ := NewOp("doc-ins-set", "actor-A", OpGridInsertAxis, GridInsertAxisPayload{Axis: "row", Index: 1, Count: 1})
+	// B updates cell (1, 0) with stable position keys
+	opSetB, _ := NewOp("doc-ins-set", "actor-B", OpGridSetCell, GridSetCellPayload{
+		Row:    1,
+		Col:    0,
+		RowPos: DefaultPos(1),
+		ColPos: DefaultPos(0),
+		Raw:    "v1_updated",
+	})
+
+	// gA: insert then set
+	_, _ = gA.Apply(opInsA)
+	_, _ = gA.Apply(opSetB)
+
+	// gB: set then insert
+	_, _ = gB.Apply(opSetB)
+	_, _ = gB.Apply(opInsA)
+
+	allA := gA.AllCells()
+	allB := gB.AllCells()
+	if len(allA) != len(allB) {
+		t.Fatalf("cell count mismatch: gA=%d, gB=%d", len(allA), len(allB))
+	}
+	for addr, cvA := range allA {
+		cvB, ok := allB[addr]
+		if !ok || cvA.Display != cvB.Display {
+			t.Fatalf("mismatch at %v: gA=%v, gB=%v", addr, cvA, cvB)
+		}
+	}
+}
+
+func TestGrid_PositionValidation(t *testing.T) {
+	grid := NewGrid("doc-val")
+	p1 := DefaultPos(1)
+	p2 := DefaultPos(2)
+
+	// Invalid position: pos <= after
+	invalidOp, _ := NewOp("doc-val", "u1", OpGridInsertAxis, GridInsertAxisPayload{
+		Axis:           "row",
+		Index:          1,
+		Count:          1,
+		Pos:            p1, // violates pos > AfterPosition
+		AfterPosition:  p1,
+		BeforePosition: p2,
+	})
+
+	_, err := grid.Apply(invalidOp)
+	if err == nil {
+		t.Fatalf("expected error for position <= AfterPosition, got nil")
+	}
+
+	// Valid position strictly between
+	validPos := Between(p1, p2)
+	validOp, _ := NewOp("doc-val", "u1", OpGridInsertAxis, GridInsertAxisPayload{
+		Axis:           "row",
+		Index:          1,
+		Count:          1,
+		Pos:            validPos,
+		AfterPosition:  p1,
+		BeforePosition: p2,
+	})
+
+	feed, err := grid.Apply(validOp)
+	if err != nil {
+		t.Fatalf("unexpected error for valid position: %v", err)
+	}
+	if feed == nil || !feed.AxesChanged {
+		t.Fatalf("expected AxesChanged=true, got %v", feed)
+	}
+}

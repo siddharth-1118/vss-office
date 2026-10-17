@@ -1,7 +1,7 @@
 # ADR 0002: CRDT Structural Convergence for Concurrent Axis Edits
 
 ## Status
-Proposed
+Accepted
 
 ## Context
 In VSS Grid, spreadsheet data is stored in a coordinate-backed CRDT (`crdt.Grid`) where cells are indexed by integer `(Row, Col)` coordinates (`internal/sheet/address.go:15`).
@@ -87,8 +87,12 @@ If the VSS document engine transitions its core cell data structures into a unif
 
 ## Consequences
 - **What closes**: Elimination of non-deterministic state divergence under concurrent row/column additions.
-- **What remains**: A future session must implement the fractional indexing generator, update `Apply(OpGridInsertAxis)`, and verify that `TestStructuralConvergence` passes.
-- **Action items for future implementation session**:
-  1. Implement `internal/crdt/fractional_index.go` with jittered midpoint generation and actor tie-breaking.
-  2. Update `Grid.Apply` for `OpGridInsertAxis` and `OpGridDeleteAxis` to maintain sorted axis positions.
-  3. Remove `//go:build convergence` from `structural_convergence_test.go` and ensure it runs as part of the default test gate.
+- **Implementation Notes**:
+  - Implemented `Pos` orderable byte string model in `internal/crdt/pos.go` with base-62 fractional indexing and jittered actor tie-breaking.
+  - Implemented `Between`, `BetweenWithActor`, and `ValidatePosBetween`.
+  - Updated `crdt.Grid` in `internal/crdt/grid.go` to store cells by `CellKey{Row: Pos, Col: Pos}` while maintaining dynamic visible integer mapping for `sheet.CellStorage`.
+  - Updated `OpGridInsertAxis` and `OpGridDeleteAxis` to maintain sorted `rows` and `cols` positions.
+  - Updated `canonicalize.go` to persist and deterministically migrate row/column positions.
+  - Removed `//go:build convergence` from `internal/crdt/structural_convergence_test.go`; `TestStructuralConvergence` now passes in the default test gate.
+  - Added 4 additional concurrent tests (`TestConcurrentRowInsertBothOrders`, `TestConcurrentColInsertBothOrders`, `TestConcurrentInsertAndDelete`, `TestConcurrentInsertAndSetCell`) in `internal/crdt/grid_test.go`.
+
