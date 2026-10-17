@@ -84,6 +84,9 @@ func (g *Grid) Apply(op Op) (*sheet.ChangeFeed, error) {
 		cv := g.cells[addr]
 		if p.Formula != nil {
 			cv.Formula = *p.Formula
+		} else if p.Raw != "" {
+			// Clearing existing formula when raw value is explicitly set
+			cv.Formula = ""
 		}
 		if p.Raw != "" {
 			coerced := sheet.CoerceRaw(p.Raw)
@@ -134,6 +137,9 @@ func (g *Grid) Apply(op Op) (*sheet.ChangeFeed, error) {
 				if addr.Row >= p.Index {
 					newAddr.Row += p.Count
 				}
+				if cv.Formula != "" {
+					cv.Formula = sheet.RewriteFormula(cv.Formula, "row", p.Index, p.Count, false)
+				}
 				newCells[newAddr] = cv
 				newMod[newAddr] = g.lastModified[addr]
 				newActor[newAddr] = g.lastActor[addr]
@@ -143,6 +149,9 @@ func (g *Grid) Apply(op Op) (*sheet.ChangeFeed, error) {
 				newAddr := addr
 				if addr.Col >= p.Index {
 					newAddr.Col += p.Count
+				}
+				if cv.Formula != "" {
+					cv.Formula = sheet.RewriteFormula(cv.Formula, "col", p.Index, p.Count, false)
 				}
 				newCells[newAddr] = cv
 				newMod[newAddr] = g.lastModified[addr]
@@ -180,6 +189,9 @@ func (g *Grid) Apply(op Op) (*sheet.ChangeFeed, error) {
 				if addr.Row >= p.Index+p.Count {
 					newAddr.Row -= p.Count
 				}
+				if cv.Formula != "" {
+					cv.Formula = sheet.RewriteFormula(cv.Formula, "row", p.Index, p.Count, true)
+				}
 				newCells[newAddr] = cv
 				newMod[newAddr] = g.lastModified[addr]
 				newActor[newAddr] = g.lastActor[addr]
@@ -193,6 +205,9 @@ func (g *Grid) Apply(op Op) (*sheet.ChangeFeed, error) {
 				newAddr := addr
 				if addr.Col >= p.Index+p.Count {
 					newAddr.Col -= p.Count
+				}
+				if cv.Formula != "" {
+					cv.Formula = sheet.RewriteFormula(cv.Formula, "col", p.Index, p.Count, true)
 				}
 				newCells[newAddr] = cv
 				newMod[newAddr] = g.lastModified[addr]

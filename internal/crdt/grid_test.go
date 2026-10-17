@@ -178,3 +178,74 @@ func TestGrid_CanonicalRoundTrip(t *testing.T) {
 		t.Errorf("canonical JSON mismatch:\nOriginal:\n%s\nReconstructed:\n%s", string(json1), string(json2))
 	}
 }
+
+func TestGrid_FormulaRewritingOnAxisShift(t *testing.T) {
+	grid := NewGrid("doc-shift")
+
+	// Set A1=10, A2=20, B1="=A1+A2"
+	formula := "=A1+A2"
+	opA1, _ := NewOp("doc-shift", "u1", OpGridSetCell, GridSetCellPayload{Row: 0, Col: 0, Raw: "10"})
+	opA2, _ := NewOp("doc-shift", "u1", OpGridSetCell, GridSetCellPayload{Row: 1, Col: 0, Raw: "20"})
+	opB1, _ := NewOp("doc-shift", "u1", OpGridSetCell, GridSetCellPayload{Row: 0, Col: 1, Formula: &formula})
+
+	_, _ = grid.Apply(opA1)
+	_, _ = grid.Apply(opA2)
+	_, _ = grid.Apply(opB1)
+
+	// Insert row at index 1 count 1 (between row 0 and row 1)
+	insertOp, _ := NewOp("doc-shift", "u1", OpGridInsertAxis, GridInsertAxisPayload{
+		Axis:  "row",
+		Index: 1,
+		Count: 1,
+	})
+	_, err := grid.Apply(insertOp)
+	if err != nil {
+		t.Fatalf("insert axis failed: %v", err)
+	}
+
+	// B1 should have rewritten formula "=A1+A3" because A2 shifted to A3
+	cvB1, ok := grid.GetCell(sheet.CellAddr{Row: 0, Col: 1})
+	if !ok {
+		t.Fatalf("B1 not found")
+	}
+	if cvB1.Formula != "=A1+A3" {
+		t.Errorf("expected rewritten formula '=A1+A3', got %q", cvB1.Formula)
+	}
+}
+
+func TestGrid_FormulaClearing(t *testing.T) {
+	grid := NewGrid("doc-clear")
+
+	// Set cell (0,0) with formula
+	formula := "=1+1"
+	op1, _ := NewOp("doc-clear", "u1", OpGridSetCell, GridSetCellPayload{
+		Row:     0,
+		Col:     0,
+		Formula: &formula,
+	})
+	_, _ = grid.Apply(op1)
+
+	cv, _ := grid.GetCell(sheet.CellAddr{Row: 0, Col: 0})
+	if cv.Formula != "=1+1" {
+		t.Fatalf("expected formula '=1+1', got %q", cv.Formula)
+	}
+
+	// Overwrite cell (0,0) with raw text and nil formula
+	op2, _ := NewOp("doc-clear", "u1", OpGridSetCell, GridSetCellPayload{
+		Row: 0,
+		Col: 0,
+		Raw: "99",
+	})
+	_, err := grid.Apply(op2)
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	cv2, _ := grid.GetCell(sheet.CellAddr{Row: 0, Col: 0})
+	if cv2.Formula != "" {
+		t.Errorf("expected formula to be cleared, got %q", cv2.Formula)
+	}
+	if cv2.Number == nil || *cv2.Number != 99 {
+		t.Errorf("expected raw number 99, got %v", cv2)
+	}
+}
