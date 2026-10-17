@@ -3,8 +3,10 @@ package collab
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/vss-suite/vss/server/internal/crdt"
+	"github.com/vss-suite/vss/server/internal/identity"
 	"github.com/vss-suite/vss/server/internal/sheet"
 )
 
@@ -69,7 +71,7 @@ func (r *Room) ApplyOp(op crdt.Op, sender *Client) error {
 
 	r.opLog = append(r.opLog, op)
 
-	// Broadcast the sequenced op to all connected clients
+	// Broadcast the sequenced op to all connected peers EXCEPT the author
 	opMsg := Message{
 		Type:    MsgOp,
 		DocID:   r.DocID,
@@ -77,32 +79,65 @@ func (r *Room) ApplyOp(op crdt.Op, sender *Client) error {
 		Seq:     op.Seq,
 		Op:      &op,
 	}
-	r.broadcastLocked(opMsg)
-
-	// Run incremental recalculation if cells or axes changed
-	if feed != nil && (len(feed.Cells) > 0 || feed.AxesChanged) {
-		stats, err := r.Engine.Recalculate(*feed)
-		if err == nil && len(stats.Changed) > 0 {
-			var values []CellValueItem
-			for _, addr := range stats.Changed {
-				if cv, ok := r.Grid.GetCell(addr); ok {
-					values = append(values, CellValueItem{
-						Row:   addr.Row,
-						Col:   addr.Col,
-						Value: cv,
-					})
-				}
-			}
-			if len(values) > 0 {
-				valuesMsg := Message{
-					Type:   MsgValues,
-					DocID:  r.DocID,
-					Values: values,
-				}
-				r.broadcastLocked(valuesMsg)
-			}
+	for client := range r.clients {
+		if client != sender {
+			client.SendMsg(opMsg)
 		}
 	}
+
+	// Recalculate and broadcast values frame to ALL peers INCLUDING author
+	changeFeed := sheet.ChangeFeed{}
+	if feed != nil {
+		changeFeed = *feed
+	}
+
+	stats, err := r.Engine.Recalculate(changeFeed)
+	if err != nil {
+		return fmt.Errorf("engine recalculate: %w", err)
+	}
+
+	changedSet := make(map[sheet.CellAddr]bool)
+	for _, c := range changeFeed.Cells {
+		changedSet[c] = true
+	}
+	for _, c := range stats.Changed {
+		changedSet[c] = true
+	}
+
+	var values []CellValueItem
+	for addr := range changedSet {
+		if cv, ok := r.Grid.GetCell(addr); ok {
+			values = append(values, CellValueItem{
+				Row:   addr.Row,
+				Col:   addr.Col,
+				Value: cv,
+			})
+		}
+	}
+
+	evalCount := stats.Evaluated
+	for _, c := range stats.Changed {
+		evalCount += len(r.Engine.Precedents(c))
+	}
+
+	recalc := &RecalcSummary{
+		Evaluated:      evalCount,
+		TotalFormulas:  stats.TotalFormulas,
+		Full:           stats.Full,
+		VolatileCells:  stats.VolatileCells,
+		StaleReads:     stats.StaleReads,
+		ChangedCells:   len(changedSet),
+		FormulaVersion: sheet.FormulaVersion,
+	}
+
+	valuesMsg := Message{
+		Type:   MsgValues,
+		DocID:  r.DocID,
+		Seq:    op.Seq,
+		Values: values,
+		Recalc: recalc,
+	}
+	r.broadcastLocked(valuesMsg)
 
 	return nil
 }
@@ -133,16 +168,41 @@ func (r *Room) broadcastLocked(msg Message) {
 	}
 }
 
+// HubOptions provides configuration options for Hub.
+type HubOptions struct {
+	Auth  identity.TokenVerifier
+	Clock func() time.Time
+	RNG   func() float64
+}
+
 // Hub manages active collaboration rooms.
 type Hub struct {
 	mu    sync.RWMutex
 	rooms map[string]*Room
+	Auth  identity.TokenVerifier
+	clock func() time.Time
+	rng   func() float64
 }
 
-// NewHub initializes a Hub.
-func NewHub() *Hub {
+// NewHub initializes a Hub with an optional TokenVerifier.
+func NewHub(auth ...identity.TokenVerifier) *Hub {
+	var v identity.TokenVerifier
+	if len(auth) > 0 {
+		v = auth[0]
+	}
 	return &Hub{
 		rooms: make(map[string]*Room),
+		Auth:  v,
+	}
+}
+
+// NewHubWithOptions initializes a Hub with specific options (injected Clock, RNG, Auth).
+func NewHubWithOptions(opts HubOptions) *Hub {
+	return &Hub{
+		rooms: make(map[string]*Room),
+		Auth:  opts.Auth,
+		clock: opts.Clock,
+		rng:   opts.RNG,
 	}
 }
 
@@ -154,9 +214,21 @@ func (h *Hub) GetOrCreateRoom(docID string) *Room {
 	room, ok := h.rooms[docID]
 	if !ok {
 		room = NewRoom(docID)
+		if h.clock != nil {
+			room.Engine.Clock = h.clock
+		}
+		if h.rng != nil {
+			room.Engine.RNG = h.rng
+		}
 		h.rooms[docID] = room
 	}
 	return room
+}
+
+// Append applies an op to the specified document room.
+func (h *Hub) Append(docID string, op crdt.Op, sender *Client) error {
+	room := h.GetOrCreateRoom(docID)
+	return room.ApplyOp(op, sender)
 }
 
 // RemoveRoom cleans up an empty room.

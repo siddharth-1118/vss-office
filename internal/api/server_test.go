@@ -96,12 +96,34 @@ func TestAPI_WebSocketEndpoint(t *testing.T) {
 	ts := httptest.NewServer(srv.Mux)
 	defer ts.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?doc_id=ws-test&actor_id=user-ws"
+	user, err := srv.Auth.Register("wsuser@test.local", "secretpass")
+	if err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	token, _, err := srv.Auth.Login(user.Email, "secretpass")
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?doc_id=ws-test&token=" + token
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("websocket dial failed: %v", err)
 	}
 	defer conn.Close()
+
+	// Read welcome frame
+	_, welcomeBytes, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read welcome: %v", err)
+	}
+	var welcome collab.Message
+	if err := json.Unmarshal(welcomeBytes, &welcome); err != nil {
+		t.Fatalf("failed to unmarshal welcome: %v", err)
+	}
+	if welcome.Type != collab.MsgWelcome {
+		t.Errorf("expected type welcome, got %s", welcome.Type)
+	}
 
 	// Send ping message
 	pingMsg := collab.Message{Type: collab.MsgPing}

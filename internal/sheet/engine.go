@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// FormulaVersion defines the current formula evaluation engine version.
+const FormulaVersion = "sheet/1"
+
 var DefaultVolatiles = map[string]bool{
 	"RAND":        true,
 	"RANDBETWEEN": true,
@@ -186,6 +189,16 @@ func (e *Engine) removeFormula(addr CellAddr) {
 		}
 	}
 	delete(e.precedents, addr)
+}
+
+// Precedents returns a copy of the precedent cell addresses for a formula cell.
+func (e *Engine) Precedents(addr CellAddr) []CellAddr {
+	if refs, ok := e.precedents[addr]; ok {
+		res := make([]CellAddr, len(refs))
+		copy(res, refs)
+		return res
+	}
+	return nil
 }
 
 // RecalculateAll triggers a full recalculation of all formula cells.

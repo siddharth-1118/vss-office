@@ -107,19 +107,15 @@ func (c *Client) ReadPump(room *Room) {
 
 		switch msg.Type {
 		case MsgJoin:
+			// Document room switching after authentication is prohibited.
 			if msg.DocID != "" && msg.DocID != room.DocID {
-				room.RemoveClient(c)
-				room = c.Hub.GetOrCreateRoom(msg.DocID)
-				room.AddClient(c)
+				c.SendMsg(Message{Type: MsgError, Error: "cannot switch documents on authenticated connection"})
 			}
 		case MsgOp:
 			if msg.Op != nil {
-				if msg.Op.ActorID == "" {
-					msg.Op.ActorID = c.ActorID
-				}
-				if msg.Op.DocID == "" {
-					msg.Op.DocID = room.DocID
-				}
+				// Enforce server-authoritative actor ID and doc ID from authenticated connection
+				msg.Op.ActorID = c.ActorID
+				msg.Op.DocID = room.DocID
 				if err := room.ApplyOp(*msg.Op, c); err != nil {
 					c.SendMsg(Message{Type: MsgError, Error: err.Error()})
 				}
@@ -166,16 +162,48 @@ func (c *Client) WritePump() {
 	}
 }
 
-// ServeWS upgrades the HTTP request to WebSocket and registers the client in the Hub.
+func rejectWith4001(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	closeMsg := websocket.FormatCloseMessage(4001, "unauthorized")
+	_ = conn.WriteControl(websocket.CloseMessage, closeMsg, time.Now().Add(time.Second))
+	_ = conn.Close()
+}
+
+// ServeWS upgrades the HTTP request to WebSocket with JWT authentication and registers the client in the Hub.
 func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" || hub.Auth == nil {
+		rejectWith4001(w, r)
+		return
+	}
+
+	claims, user, err := hub.Auth.VerifyClaims(token)
+	if err != nil {
+		rejectWith4001(w, r)
+		return
+	}
+
+	// Determine document ID: verified against claims
 	docID := r.URL.Query().Get("doc_id")
 	if docID == "" {
-		docID = "default"
+		if len(claims.DocIDs) > 0 && claims.DocIDs[0] != "*" {
+			docID = claims.DocIDs[0]
+		} else {
+			docID = "default"
+		}
+	} else {
+		if !claims.HasDocPermission(docID) {
+			rejectWith4001(w, r)
+			return
+		}
 	}
-	actorID := r.URL.Query().Get("actor_id")
-	if actorID == "" {
-		actorID = "anonymous"
-	}
+
+	// ActorID is derived strictly from authenticated user.ID
+	actorID := user.ID
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -186,6 +214,14 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	client := NewClient(hub, conn, docID, actorID)
 	room := hub.GetOrCreateRoom(docID)
 	room.AddClient(client)
+
+	// Send welcome frame containing authenticated user identity
+	client.SendMsg(Message{
+		Type:    MsgWelcome,
+		DocID:   docID,
+		ActorID: user.ID,
+		UserID:  user.ID,
+	})
 
 	go client.WritePump()
 	client.ReadPump(room)

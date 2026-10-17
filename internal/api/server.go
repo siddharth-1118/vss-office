@@ -8,23 +8,40 @@ import (
 
 	"github.com/vss-suite/vss/server/internal/collab"
 	"github.com/vss-suite/vss/server/internal/crdt"
+	"github.com/vss-suite/vss/server/internal/identity"
 	"github.com/vss-suite/vss/server/internal/sheet"
 )
 
 // Server encapsulates the HTTP API and WebSocket collaboration server.
 type Server struct {
-	Hub *collab.Hub
-	Mux *http.ServeMux
+	Hub  *collab.Hub
+	Mux  *http.ServeMux
+	Auth *identity.Service
 }
 
 // NewServer initializes a new Server with all registered endpoints.
-func NewServer(hub *collab.Hub) *Server {
-	if hub == nil {
-		hub = collab.NewHub()
+func NewServer(hub *collab.Hub, auth ...*identity.Service) *Server {
+	var authSvc *identity.Service
+	if len(auth) > 0 {
+		authSvc = auth[0]
+	} else if hub != nil && hub.Auth != nil {
+		if as, ok := hub.Auth.(*identity.Service); ok {
+			authSvc = as
+		}
 	}
+	if authSvc == nil {
+		authSvc = identity.NewService(identity.NewMemoryUserStore(), []byte("vss-dev-secret-key-32-bytes-long"))
+	}
+	if hub == nil {
+		hub = collab.NewHub(authSvc)
+	} else if hub.Auth == nil {
+		hub.Auth = authSvc
+	}
+
 	s := &Server{
-		Hub: hub,
-		Mux: http.NewServeMux(),
+		Hub:  hub,
+		Mux:  http.NewServeMux(),
+		Auth: authSvc,
 	}
 	s.registerRoutes()
 	return s
