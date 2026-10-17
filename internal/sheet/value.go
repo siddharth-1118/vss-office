@@ -235,6 +235,36 @@ func (v Value) ToCellValue(formula string) CellValue {
 	return cv
 }
 
+func (cv CellValue) ToValue() Value {
+	switch cv.Kind {
+	case "blank":
+		return NewBlank()
+	case "number":
+		if cv.Number != nil {
+			return NewNumber(*cv.Number)
+		}
+		n, err := strconv.ParseFloat(cv.Display, 64)
+		if err == nil {
+			return NewNumber(n)
+		}
+		return NewNumber(0)
+	case "text":
+		return NewText(cv.Display)
+	case "bool":
+		return NewBool(strings.ToUpper(cv.Display) == "TRUE")
+	case "error":
+		return NewError(cv.Error)
+	default:
+		if cv.Formula != "" {
+			return NewBlank()
+		}
+		if cv.Display == "" {
+			return NewBlank()
+		}
+		return NewText(cv.Display)
+	}
+}
+
 func (v Value) String() string {
 	switch v.Kind {
 	case KindBlank:
