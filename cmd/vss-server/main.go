@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,15 +13,57 @@ import (
 
 	"github.com/vss-suite/vss/server/internal/api"
 	"github.com/vss-suite/vss/server/internal/collab"
+	"github.com/vss-suite/vss/server/internal/identity"
 )
 
 func main() {
 	var addr string
+	var jwtSecret string
+	var dataDir string
+
 	flag.StringVar(&addr, "addr", ":8080", "Server listen address")
+	flag.StringVar(&jwtSecret, "jwt-secret", "", "JWT secret key for authentication (required)")
+	flag.StringVar(&dataDir, "data-dir", "./data", "Directory for persistent document and metadata storage")
 	flag.Parse()
 
-	hub := collab.NewHub()
-	srv := api.NewServer(hub)
+	if jwtSecret == "" {
+		fmt.Fprintln(os.Stderr, "error: -jwt-secret is required")
+		os.Exit(1)
+	}
+
+	// LIMITATION (cmd/vss-server/main.go:34): no metrics endpoint implemented; see cmd/vss-server/main.go for where it would be wired.
+
+	userStore := identity.NewMemoryUserStore()
+	if userStore == nil {
+		log.Fatalf("boot failed: identity subsystem failed to initialize")
+	}
+
+	authSvc := identity.NewService(userStore, []byte(jwtSecret))
+	if authSvc == nil {
+		log.Fatalf("boot failed: identity service failed to initialize")
+	}
+
+	docStore := api.NewFileDocStore(dataDir)
+	if docStore == nil {
+		log.Fatalf("boot failed: docstore subsystem failed to initialize")
+	}
+
+	hub := collab.NewHub(authSvc)
+	if hub == nil {
+		log.Fatalf("boot failed: hub subsystem failed to initialize")
+	}
+
+	srv := api.NewServerWithOptions(api.ServerOptions{
+		Hub:      hub,
+		Auth:     authSvc,
+		DocStore: docStore,
+		DataDir:  dataDir,
+	})
+	if srv == nil || srv.Mux == nil {
+		log.Fatalf("boot failed: mux subsystem failed to initialize")
+	}
+
+	log.Printf("VSS Server initializing subsystems: identity=ready, docstore=ready (%s), hub=ready, mux=ready, port=%s", dataDir, addr)
 
 	httpServer := &http.Server{
 		Addr:         addr,
