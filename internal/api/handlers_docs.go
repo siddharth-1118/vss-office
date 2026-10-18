@@ -37,8 +37,8 @@ func (s *Server) handleCreateDoc(w http.ResponseWriter, r *http.Request) {
 	}
 
 	docType := strings.ToLower(strings.TrimSpace(req.Type))
-	if docType != "grid" {
-		writeError(w, http.StatusBadRequest, "only 'grid' type is supported in this session ('writer' and 'present' are not supported)")
+	if docType != "grid" && docType != "writer" {
+		writeError(w, http.StatusBadRequest, "only 'grid' and 'writer' types are supported in this session ('present' is not supported)")
 		return
 	}
 
@@ -48,7 +48,7 @@ func (s *Server) handleCreateDoc(w http.ResponseWriter, r *http.Request) {
 		ID:        docID,
 		Name:      name,
 		OwnerID:   user.ID,
-		Type:      "grid",
+		Type:      docType,
 		CreatedAt: now,
 	}
 
@@ -61,12 +61,20 @@ func (s *Server) handleCreateDoc(w http.ResponseWriter, r *http.Request) {
 	room := s.Hub.GetOrCreateRoom(docID)
 
 	// Persist empty canonical snapshot to data/docs/{id}/snapshot.json
-	gridSnapshot, err := room.Grid.ToCanonicalJSON()
-	if err == nil {
-		docDir := filepath.Join(s.DataDir, "docs", docID)
-		_ = os.MkdirAll(docDir, 0o755)
-		snapFile := filepath.Join(docDir, "snapshot.json")
-		_ = os.WriteFile(snapFile, gridSnapshot, 0o644)
+	docDir := filepath.Join(s.DataDir, "docs", docID)
+	_ = os.MkdirAll(docDir, 0o755)
+	snapFile := filepath.Join(docDir, "snapshot.json")
+
+	if docType == "writer" {
+		writerSnapshot, err := room.Writer.ToSnapshotJSON()
+		if err == nil {
+			_ = os.WriteFile(snapFile, writerSnapshot, 0o644)
+		}
+	} else {
+		gridSnapshot, err := room.Grid.ToCanonicalJSON()
+		if err == nil {
+			_ = os.WriteFile(snapFile, gridSnapshot, 0o644)
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, meta)

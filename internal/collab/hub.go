@@ -8,25 +8,42 @@ import (
 	"github.com/vss-suite/vss/server/internal/crdt"
 	"github.com/vss-suite/vss/server/internal/identity"
 	"github.com/vss-suite/vss/server/internal/sheet"
+	"github.com/vss-suite/vss/server/internal/writer"
 )
 
-// Room manages a single document's collaboration session, CRDT Grid, and recalculation engine.
+// Room manages a single document's collaboration session, CRDT Grid, or Writer document.
 type Room struct {
 	mu      sync.Mutex
 	DocID   string
+	Kind    string // "grid" or "writer"
 	Grid    *crdt.Grid
 	Engine  *sheet.Engine
+	Writer  *writer.Doc
 	lastSeq int64
 	opLog   []crdt.Op
 	clients map[*Client]bool
 }
 
-// NewRoom constructs an active collaboration room for a document.
+// NewRoom constructs an active collaboration room for a document (defaults to "grid").
 func NewRoom(docID string) *Room {
+	return NewRoomWithKind(docID, "grid")
+}
+
+// NewRoomWithKind constructs an active collaboration room of the specified kind ("grid" or "writer").
+func NewRoomWithKind(docID, kind string) *Room {
+	if kind == "writer" {
+		return &Room{
+			DocID:   docID,
+			Kind:    "writer",
+			Writer:  writer.NewDoc(docID),
+			clients: make(map[*Client]bool),
+		}
+	}
 	grid := crdt.NewGrid(docID)
 	engine := sheet.NewEngine(grid)
 	return &Room{
 		DocID:   docID,
+		Kind:    "grid",
 		Grid:    grid,
 		Engine:  engine,
 		clients: make(map[*Client]bool),
@@ -63,6 +80,29 @@ func (r *Room) ApplyOp(op crdt.Op, sender *Client) error {
 	// Assign monotonic sequence number
 	r.lastSeq++
 	op.Seq = r.lastSeq
+
+	if r.Kind == "writer" {
+		if err := r.Writer.Apply(op); err != nil {
+			return fmt.Errorf("apply op to writer: %w", err)
+		}
+		r.opLog = append(r.opLog, op)
+
+		// Broadcast the sequenced op to all connected peers EXCEPT the author
+		opMsg := Message{
+			Type:    MsgOp,
+			DocID:   r.DocID,
+			ActorID: op.ActorID,
+			Seq:     op.Seq,
+			Op:      &op,
+		}
+		for client := range r.clients {
+			if client != sender {
+				client.SendMsg(opMsg)
+			}
+		}
+		// Writer note: op stream only, no values stream
+		return nil
+	}
 
 	feed, err := r.Grid.Apply(op)
 	if err != nil {
@@ -170,18 +210,20 @@ func (r *Room) broadcastLocked(msg Message) {
 
 // HubOptions provides configuration options for Hub.
 type HubOptions struct {
-	Auth  identity.TokenVerifier
-	Clock func() time.Time
-	RNG   func() float64
+	Auth         identity.TokenVerifier
+	Clock        func() time.Time
+	RNG          func() float64
+	KindResolver func(docID string) (string, error)
 }
 
 // Hub manages active collaboration rooms.
 type Hub struct {
-	mu    sync.RWMutex
-	rooms map[string]*Room
-	Auth  identity.TokenVerifier
-	clock func() time.Time
-	rng   func() float64
+	mu           sync.RWMutex
+	rooms        map[string]*Room
+	Auth         identity.TokenVerifier
+	clock        func() time.Time
+	rng          func() float64
+	KindResolver func(docID string) (string, error)
 }
 
 // NewHub initializes a Hub with an optional TokenVerifier.
@@ -196,13 +238,14 @@ func NewHub(auth ...identity.TokenVerifier) *Hub {
 	}
 }
 
-// NewHubWithOptions initializes a Hub with specific options (injected Clock, RNG, Auth).
+// NewHubWithOptions initializes a Hub with specific options (injected Clock, RNG, Auth, KindResolver).
 func NewHubWithOptions(opts HubOptions) *Hub {
 	return &Hub{
-		rooms: make(map[string]*Room),
-		Auth:  opts.Auth,
-		clock: opts.Clock,
-		rng:   opts.RNG,
+		rooms:        make(map[string]*Room),
+		Auth:         opts.Auth,
+		clock:        opts.Clock,
+		rng:          opts.RNG,
+		KindResolver: opts.KindResolver,
 	}
 }
 
@@ -213,12 +256,20 @@ func (h *Hub) GetOrCreateRoom(docID string) *Room {
 
 	room, ok := h.rooms[docID]
 	if !ok {
-		room = NewRoom(docID)
-		if h.clock != nil {
-			room.Engine.Clock = h.clock
+		kind := "grid"
+		if h.KindResolver != nil {
+			if k, err := h.KindResolver(docID); err == nil && k != "" {
+				kind = k
+			}
 		}
-		if h.rng != nil {
-			room.Engine.RNG = h.rng
+		room = NewRoomWithKind(docID, kind)
+		if room.Engine != nil {
+			if h.clock != nil {
+				room.Engine.Clock = h.clock
+			}
+			if h.rng != nil {
+				room.Engine.RNG = h.rng
+			}
 		}
 		h.rooms[docID] = room
 	}

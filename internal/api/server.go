@@ -10,6 +10,7 @@ import (
 	"github.com/vss-suite/vss/server/internal/crdt"
 	"github.com/vss-suite/vss/server/internal/identity"
 	"github.com/vss-suite/vss/server/internal/sheet"
+	"github.com/vss-suite/vss/server/internal/writer"
 )
 
 // Server encapsulates the HTTP API, DocStore, and WebSocket collaboration server.
@@ -56,6 +57,16 @@ func NewServerWithOptions(opts ServerOptions) *Server {
 	docStore := opts.DocStore
 	if docStore == nil {
 		docStore = NewFileDocStore(dataDir)
+	}
+
+	if hub.KindResolver == nil && docStore != nil {
+		hub.KindResolver = func(docID string) (string, error) {
+			meta, err := docStore.Get(docID)
+			if err != nil {
+				return "grid", nil
+			}
+			return meta.Type, nil
+		}
 	}
 
 	s := &Server{
@@ -120,7 +131,13 @@ func (s *Server) handleDocExport(w http.ResponseWriter, r *http.Request) {
 	}
 	room := s.Hub.GetOrCreateRoom(docID)
 
-	data, err := room.Grid.ToCanonicalJSON()
+	var data []byte
+	var err error
+	if room.Kind == "writer" {
+		data, err = room.Writer.ToSnapshotJSON()
+	} else {
+		data, err = room.Grid.ToCanonicalJSON()
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -152,13 +169,26 @@ func (s *Server) handleDocImport(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	room := s.Hub.GetOrCreateRoom(docID)
+	if room.Kind == "writer" {
+		writerDoc, err := writer.FromSnapshotJSON(body)
+		if err != nil {
+			http.Error(w, "invalid writer snapshot json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		room.Writer = writerDoc
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "imported", "doc_id": docID})
+		return
+	}
+
 	grid, err := crdt.FromCanonicalJSON(body)
 	if err != nil {
 		http.Error(w, "invalid canonical json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	room := s.Hub.GetOrCreateRoom(docID)
 	room.Grid = grid
 	room.Engine = sheet.NewEngine(grid)
 	_, _ = room.Engine.RecalculateAll()

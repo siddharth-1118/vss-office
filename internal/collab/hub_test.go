@@ -322,3 +322,153 @@ func TestHub_ConcurrentWriteSafety(t *testing.T) {
 		t.Errorf("expected 50 messages read without error, got %d", readCount)
 	}
 }
+
+func TestHub_WriterInsertBroadcast(t *testing.T) {
+	authSvc := newHubTestAuth(t)
+	hub := NewHubWithOptions(HubOptions{
+		Auth: authSvc,
+		KindResolver: func(docID string) (string, error) {
+			return "writer", nil
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ServeWS(hub, w, r)
+	}))
+	defer server.Close()
+
+	docID := "doc-writer-test"
+	aliceConn, aliceUser := connectAuthenticatedWS(t, server.URL, docID, authSvc, "alice@test.local", "alicepass")
+	defer aliceConn.Close()
+
+	bobConn, _ := connectAuthenticatedWS(t, server.URL, docID, authSvc, "bob@test.local", "bobpass")
+	defer bobConn.Close()
+
+	// Alice sends OpWriterInsertText "foo"
+	insOp1, err := crdt.NewOp(docID, aliceUser.ID, crdt.OpWriterInsertText, crdt.WriterInsertTextPayload{
+		Text: "foo",
+	})
+	if err != nil {
+		t.Fatalf("create insOp1 failed: %v", err)
+	}
+	aliceMsg1 := Message{Type: MsgOp, Op: &insOp1}
+	data1, _ := json.Marshal(aliceMsg1)
+	if err := aliceConn.WriteMessage(websocket.TextMessage, data1); err != nil {
+		t.Fatalf("alice write op 1 failed: %v", err)
+	}
+
+	// Bob receives op frame with Seq=1
+	bobConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, bobBytes1, err := bobConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("bob read op 1 failed: %v", err)
+	}
+	var bobMsg1 Message
+	if err := json.Unmarshal(bobBytes1, &bobMsg1); err != nil {
+		t.Fatalf("bob unmarshal op 1 failed: %v", err)
+	}
+	if bobMsg1.Type != MsgOp || bobMsg1.Seq != 1 || bobMsg1.Op.Type != crdt.OpWriterInsertText {
+		t.Fatalf("bob expected OpWriterInsertText Seq=1, got type=%s, seq=%d", bobMsg1.Type, bobMsg1.Seq)
+	}
+
+	// Alice now sends "bar" after "foo"
+	room := hub.GetOrCreateRoom(docID)
+	lastPos := room.Writer.Chars[len(room.Writer.Chars)-1].Pos
+	insOp2, err := crdt.NewOp(docID, aliceUser.ID, crdt.OpWriterInsertText, crdt.WriterInsertTextPayload{
+		After: lastPos,
+		Text:  "bar",
+	})
+	if err != nil {
+		t.Fatalf("create insOp2 failed: %v", err)
+	}
+	aliceMsg2 := Message{Type: MsgOp, Op: &insOp2}
+	data2, _ := json.Marshal(aliceMsg2)
+	if err := aliceConn.WriteMessage(websocket.TextMessage, data2); err != nil {
+		t.Fatalf("alice write op 2 failed: %v", err)
+	}
+
+	// Bob receives op 2
+	bobConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, bobBytes2, err := bobConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("bob read op 2 failed: %v", err)
+	}
+	var bobMsg2 Message
+	_ = json.Unmarshal(bobBytes2, &bobMsg2)
+	if bobMsg2.Type != MsgOp || bobMsg2.Seq != 2 {
+		t.Fatalf("bob expected op 2, got type=%s, seq=%d", bobMsg2.Type, bobMsg2.Seq)
+	}
+
+	// Verify room text is "foobar"
+	if got := room.Writer.String(); got != "foobar" {
+		t.Fatalf("expected room text 'foobar', got %q", got)
+	}
+
+	// Verify no MsgValues was sent to Bob (read deadline short check)
+	bobConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _, errTimeout := bobConn.ReadMessage()
+	if errTimeout == nil {
+		t.Fatalf("expected no values stream message for writer room")
+	}
+}
+
+func TestHub_WriterDeleteBroadcast(t *testing.T) {
+	authSvc := newHubTestAuth(t)
+	hub := NewHubWithOptions(HubOptions{
+		Auth: authSvc,
+		KindResolver: func(docID string) (string, error) {
+			return "writer", nil
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ServeWS(hub, w, r)
+	}))
+	defer server.Close()
+
+	docID := "doc-writer-del-test"
+	aliceConn, aliceUser := connectAuthenticatedWS(t, server.URL, docID, authSvc, "alice@test.local", "alicepass")
+	defer aliceConn.Close()
+
+	bobConn, _ := connectAuthenticatedWS(t, server.URL, docID, authSvc, "bob@test.local", "bobpass")
+	defer bobConn.Close()
+
+	// Alice inserts "ABCDE"
+	insOp, _ := crdt.NewOp(docID, aliceUser.ID, crdt.OpWriterInsertText, crdt.WriterInsertTextPayload{
+		Text: "ABCDE",
+	})
+	aliceMsg := Message{Type: MsgOp, Op: &insOp}
+	data, _ := json.Marshal(aliceMsg)
+	_ = aliceConn.WriteMessage(websocket.TextMessage, data)
+
+	// Bob reads insert op
+	bobConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, _ = bobConn.ReadMessage()
+
+	room := hub.GetOrCreateRoom(docID)
+	// Alice deletes 'C' (index 2) by ID
+	delCharID := room.Writer.Chars[2].ID
+	delOp, _ := crdt.NewOp(docID, aliceUser.ID, crdt.OpWriterDeleteRange, crdt.WriterDeleteRangePayload{
+		IDs: []string{delCharID},
+	})
+	aliceDelMsg := Message{Type: MsgOp, Op: &delOp}
+	delData, _ := json.Marshal(aliceDelMsg)
+	_ = aliceConn.WriteMessage(websocket.TextMessage, delData)
+
+	// Bob receives delete op
+	bobConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, bobDelBytes, err := bobConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("bob read delete op failed: %v", err)
+	}
+	var bobDelMsg Message
+	_ = json.Unmarshal(bobDelBytes, &bobDelMsg)
+	if bobDelMsg.Type != MsgOp || bobDelMsg.Seq != 2 || bobDelMsg.Op.Type != crdt.OpWriterDeleteRange {
+		t.Fatalf("bob expected delete op frame Seq=2, got type=%s, seq=%d", bobDelMsg.Type, bobDelMsg.Seq)
+	}
+
+	// Verify room text is "ABDE"
+	if got := room.Writer.String(); got != "ABDE" {
+		t.Fatalf("expected room text 'ABDE', got %q", got)
+	}
+}

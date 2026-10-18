@@ -146,6 +146,11 @@ type ChangeFeed struct {
   - Document ID is derived from or validated against the JWT claims (`claims.HasDocPermission(docID)`).
   - Actor ID is derived strictly from authenticated user ID (`user.ID` from `claims.Subject`), closing actor-spoofing vectors.
   - Connection sends `welcome` frame carrying `user_id` and `actor_id` upon successful upgrade.
+- **Writer document collaboration**:
+  - Writer rooms (`Kind: "writer"`) stream operations only (`writer.insert_text`, `writer.delete_range`).
+  - Writer note: op stream only, no values stream. Unlike spreadsheet rooms, there is no formula calculation and no `values` frame emitted.
+  - Sockets in Writer rooms receive sequenced `op` frames only.
+  - Tombstone pruning and character formatting are explicitly deferred / out of scope in Phase 13.
 
 ## Limitations
 
@@ -161,4 +166,6 @@ type ChangeFeed struct {
 | 8 | Metrics endpoint not implemented | OPEN | [cmd/vss-server/main.go:34](file:///E:/projects/vss/server/cmd/vss-server/main.go#L34) (`no metrics endpoint implemented`) | Flag `-metrics` removed; see `cmd/vss-server/main.go` for where it would be wired |
 | 9 | Hub room eviction on document deletion | OPEN | [internal/api/handlers_docs.go:124](file:///E:/projects/vss/server/internal/api/handlers_docs.go#L124) (`func handleDeleteDoc`) | `DELETE /api/docs/{id}` removes metadata and disk snapshot, but does not evict active in-memory Room from Hub |
 | 10 | Document versioning, sharing, and role models | OPEN | [internal/api/docs.go:21](file:///E:/projects/vss/server/internal/api/docs.go#L21) (`type DocMetadata struct`) | Document model lacks revision history, fine-grained access control lists, and multi-user sharing permissions |
+| 11 | Writer tombstone pruning | OPEN | [internal/writer/doc.go:34](file:///E:/projects/vss/server/internal/writer/doc.go#L34) (`tombstones map[string]bool`) | Tombstones retained in memory and snapshots for convergence; pruning deferred |
+| 12 | Writer character formatting and rich text | OPEN | [internal/writer/doc.go:12](file:///E:/projects/vss/server/internal/writer/doc.go#L12) (`type Char struct`) | Plain text only; rich text formatting unsupported |
 

@@ -154,18 +154,18 @@ func TestDocs_CreateAndList_HappyPath(t *testing.T) {
 	}
 }
 
-func TestDocs_Create_WriterRefused(t *testing.T) {
+func TestDocs_Create_PresentRefused(t *testing.T) {
 	srv, _, _ := newTestDocServer(t)
 	token := registerAndLogin(t, srv, "alice@test.local", "secretpass")
 
-	reqBody := `{"name": "Novel Draft", "type": "writer"}`
+	reqBody := `{"name": "Pitch Deck", "type": "present"}`
 	req := httptest.NewRequest("POST", "/api/docs", bytes.NewBufferString(reqBody))
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	srv.Mux.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for type='writer', got %d", w.Code)
+		t.Fatalf("expected 400 for type='present', got %d", w.Code)
 	}
 
 	var errResp errorResponse
@@ -322,5 +322,110 @@ func TestDocs_Readyz_StoreFailure(t *testing.T) {
 	}
 	if resp["error"] == "" {
 		t.Fatalf("expected non-empty error string in response")
+	}
+}
+
+func TestDocs_CreateWriter_HappyPath(t *testing.T) {
+	srv, _, _ := newTestDocServer(t)
+	token := registerAndLogin(t, srv, "writer-creator@test.local", "secretpass123")
+
+	reqBody := `{"name": "Meeting Notes", "type": "writer"}`
+	req := httptest.NewRequest("POST", "/api/docs", bytes.NewBufferString(reqBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.Mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d (body: %s)", w.Code, w.Body.String())
+	}
+
+	var meta DocMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode metadata: %v", err)
+	}
+
+	if meta.Type != "writer" {
+		t.Fatalf("expected type 'writer', got %q", meta.Type)
+	}
+	if meta.Name != "Meeting Notes" {
+		t.Fatalf("expected name 'Meeting Notes', got %q", meta.Name)
+	}
+}
+
+func TestDocs_WriterExport_ReturnsEmptySnapshot(t *testing.T) {
+	srv, _, _ := newTestDocServer(t)
+	token := registerAndLogin(t, srv, "writer-export@test.local", "secretpass123")
+
+	reqBody := `{"name": "Blank Writer", "type": "writer"}`
+	req := httptest.NewRequest("POST", "/api/docs", bytes.NewBufferString(reqBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.Mux.ServeHTTP(w, req)
+
+	var meta DocMetadata
+	_ = json.NewDecoder(w.Body).Decode(&meta)
+
+	// Call export
+	exportReq := httptest.NewRequest("GET", "/api/docs/"+meta.ID+"/export", nil)
+	wExp := httptest.NewRecorder()
+	srv.Mux.ServeHTTP(wExp, exportReq)
+
+	if wExp.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d (body: %s)", wExp.Code, wExp.Body.String())
+	}
+
+	var snap map[string]any
+	if err := json.Unmarshal(wExp.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("failed to parse snapshot JSON: %v", err)
+	}
+
+	if snap["doc_id"] != meta.ID {
+		t.Fatalf("expected doc_id %q, got %v", meta.ID, snap["doc_id"])
+	}
+	chars, ok := snap["chars"].([]any)
+	if !ok || len(chars) != 0 {
+		t.Fatalf("expected empty chars array, got %v", snap["chars"])
+	}
+	tombstones, ok := snap["tombstones"].([]any)
+	if !ok || len(tombstones) != 0 {
+		t.Fatalf("expected empty tombstones array, got %v", snap["tombstones"])
+	}
+}
+
+func TestDocs_WriterImport_LoadsSnapshot(t *testing.T) {
+	srv, _, _ := newTestDocServer(t)
+	token := registerAndLogin(t, srv, "writer-import@test.local", "secretpass123")
+
+	// Create doc
+	reqBody := `{"name": "Import Target", "type": "writer"}`
+	req := httptest.NewRequest("POST", "/api/docs", bytes.NewBufferString(reqBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.Mux.ServeHTTP(w, req)
+
+	var meta DocMetadata
+	_ = json.NewDecoder(w.Body).Decode(&meta)
+
+	// Import snapshot with text
+	snapJSON := `{
+		"doc_id": "` + meta.ID + `",
+		"chars": [
+			{"id": "c1", "pos": "a0", "value": "H"},
+			{"id": "c2", "pos": "a1", "value": "i"}
+		],
+		"tombstones": []
+	}`
+	importReq := httptest.NewRequest("POST", "/api/docs/"+meta.ID+"/import", bytes.NewBufferString(snapJSON))
+	wImp := httptest.NewRecorder()
+	srv.Mux.ServeHTTP(wImp, importReq)
+
+	if wImp.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on import, got %d (body: %s)", wImp.Code, wImp.Body.String())
+	}
+
+	// Verify room now has imported content
+	room := srv.Hub.GetOrCreateRoom(meta.ID)
+	if room.Writer == nil || room.Writer.String() != "Hi" {
+		t.Fatalf("expected room writer text 'Hi', got %v", room.Writer)
 	}
 }

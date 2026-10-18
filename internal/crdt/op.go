@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	OpGridSetCell    = "grid.set_cell"
-	OpGridInsertAxis = "grid.insert_axis"
-	OpGridDeleteAxis = "grid.delete_axis"
+	OpGridSetCell       = "grid.set_cell"
+	OpGridInsertAxis    = "grid.insert_axis"
+	OpGridDeleteAxis    = "grid.delete_axis"
+	OpWriterInsertText  = "writer.insert_text"
+	OpWriterDeleteRange = "writer.delete_range"
 )
 
 type Op struct {
@@ -48,6 +50,20 @@ type GridDeleteAxisPayload struct {
 	Index int    `json:"index"`
 	Count int    `json:"count"`
 	Pos   Pos    `json:"pos,omitempty"`
+}
+
+type WriterInsertTextPayload struct {
+	Pos       Pos    `json:"pos,omitempty"`
+	After     Pos    `json:"after,omitempty"`
+	Before    Pos    `json:"before,omitempty"`
+	Text      string `json:"text"`
+	Positions []Pos  `json:"positions,omitempty"`
+}
+
+type WriterDeleteRangePayload struct {
+	From Pos      `json:"from,omitempty"`
+	To   Pos      `json:"to,omitempty"`
+	IDs  []string `json:"ids,omitempty"`
 }
 
 // NewOp creates an Op, accepting any typed struct payload and marshaling it to JSON internally.
