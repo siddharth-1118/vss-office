@@ -123,17 +123,14 @@ func TestStructuralConvergence(t *testing.T) {
 	}
 
 	// Assert cell-by-cell convergence across replicas
-	diverged := false
 	for r := 0; r < 5; r++ {
-		if orderA[r] != orderB[r] || orderA[r] == "<blank>" {
-			diverged = true
-			break
+		if orderA[r] == "<blank>" && orderB[r] == "<blank>" {
+			t.Fatalf("missing cell at row %d (replica A: %q, replica B: %q)", r, orderA[r], orderB[r])
 		}
-	}
-
-	if diverged {
-		t.Fatalf("CRDT structural divergence detected:\n  replica A has %v\n  replica B has %v\nSee docs/adr/0002-crdt-structural-convergence.md",
-			formatOrder(orderA), formatOrder(orderB))
+		if orderA[r] != orderB[r] {
+			t.Fatalf("CRDT structural divergence detected at row %d:\n  replica A has %v\n  replica B has %v\nSee docs/adr/0002-crdt-structural-convergence.md",
+				r, formatOrder(orderA), formatOrder(orderB))
+		}
 	}
 }
 
