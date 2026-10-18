@@ -12,7 +12,13 @@ test.describe('Auth and Session Expiration', () => {
 
   test.beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vss-auth-test-'));
-    const serverBinary = path.resolve('..', 'server', 'vss-server.exe');
+    let serverBinary = path.resolve('..', 'vss-server.exe');
+    if (!fs.existsSync(serverBinary)) {
+      serverBinary = path.resolve('..', 'server', 'vss-server.exe');
+    }
+    if (!fs.existsSync(serverBinary)) {
+      throw new Error(`Server binary not found at ${serverBinary}`);
+    }
 
     serverProcess = spawn(
       serverBinary,

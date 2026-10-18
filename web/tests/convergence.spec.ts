@@ -12,7 +12,10 @@ test.describe('Two-tab collaboration convergence', () => {
 
   test.beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vss-conv-test-'));
-    const serverBinary = path.resolve('..', 'server', 'vss-server.exe');
+    let serverBinary = path.resolve('..', 'vss-server.exe');
+    if (!fs.existsSync(serverBinary)) {
+      serverBinary = path.resolve('..', 'server', 'vss-server.exe');
+    }
     if (!fs.existsSync(serverBinary)) {
       throw new Error(`Server binary not found at ${serverBinary}`);
     }
